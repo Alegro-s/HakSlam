@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SLAM 3D Visualizer</title>
+  <style>
+    body { 
+      margin: 0; 
+      padding: 0; 
+      background: #1a1a1a; 
+      overflow: hidden; 
+      font-family: Arial, sans-serif;
+      width: 100vw;
+      height: 100vh;
+    }
+    #info {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      color: white;
+      background: rgba(0,0,0,0.8);
+      padding: 10px;
+      border-radius: 5px;
+      z-index: 100;
+      font-size: 12px;
+      max-width: 200px;
+    }
+    #controls {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      background: rgba(0,0,0,0.8);
+      padding: 8px;
+      border-radius: 5px;
+      z-index: 100;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    #loading {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      color: white;
+      font-size: 16px;
+      text-align: center;
+      z-index: 1000;
+    }
+    #error {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      color: #ff6b6b;
+      font-size: 14px;
+      text-align: center;
+      background: rgba(0,0,0,0.8);
+      padding: 20px;
+      border-radius: 8px;
+      z-index: 1000;
+      display: none;
+    }
+    .control-btn {
+      background: #2a2a2a;
+      border: none;
+      color: white;
+      padding: 6px 10px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 11px;
+      transition: background 0.2s;
+    }
+    .control-btn:hover {
+      background: #3a3a3a;
+    }
+    .control-btn.active {
+      background: #4a4a4a;
+    }
+    #canvas-container {
+      width: 100%;
+      height: 100%;
+      display: block;
+      background: #2a2a2a;
+    }
+    .demo-canvas {
+      width: 100%;
+      height: 100%;
+      background: linear-gradient(45deg, #1a1a1a 25%, #2a2a2a 25%, #2a2a2a 50%, #1a1a1a 50%, #1a1a1a 75%, #2a2a2a 75%);
+      background-size: 20px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: white;
+      font-size: 18px;
+    }
+  </style>
+</head>
+<body>
+  <div id="info">
+    <div>SLAM 3D Visualizer</div>
+    <div id="stats">Ожидание данных...</div>
+  </div>
+  
+  <div id="controls">
+    <button class="control-btn active" onclick="toggleVisibility('trajectory')" id="btn-trajectory">Траектория</button>
+    <button class="control-btn active" onclick="toggleVisibility('points')" id="btn-points">Точки</button>
+    <button class="control-btn" onclick="toggleVisibility('axes')" id="btn-axes">Оси</button>
+    <button class="control-btn" onclick="toggleVisibility('grid')" id="btn-grid">Сетка</button>
+    <button class="control-btn" onclick="resetCamera()">Сброс камеры</button>
+  </div>
+
+  <div id="loading">
+    Загрузка 3D визуализатора...
+    <br>
+    <div style="margin-top: 10px; font-size: 12px; color: #ccc;">
+      Инициализация Three.js...
+    </div>
+  </div>
+
+  <div id="error" style="display: none;">
+    Ошибка загрузки 3D визуализатора
+    <br>
+    <button onclick="init()" style="margin-top: 10px; padding: 5px 10px; background: #ff6b6b; border: none; border-radius: 4px; color: white; cursor: pointer;">
+      Попробовать снова
+    </button>
+  </div>
+
+  <div id="canvas-container">
+    <div class="demo-canvas" id="demo-canvas">
+      3D Визуализация SLAM<br>
+      <span style="font-size: 14px; color: #ccc;">Загрузка данных...</span>
+    </div>
+  </div>
+
+  <script src="assets/web/three.js"></script>
+  <script>
+    let scene, camera, renderer;
+    let trajectory, pointCloud, currentCamera;
+    let isDragging = false;
+    let previousMousePosition = { x: 0, y: 0 };
+    let cameraDistance = 15;
+    let cameraAngleX = Math.PI / 4;
+    let cameraAngleY = Math.PI / 4;
+
+    const visibility = {
+      trajectory: true,
+      points: true,
+      axes: false,
+      grid: false
+    };
+
+    function init() {
+      try {
+        // Проверяем доступность Three.js
+        if (typeof THREE === 'undefined') {
+          throw new Error('Three.js not loaded');
+        }
+
+        console.log('Three.js version:', THREE.REVISION);
+        
+        // Создаем сцену
+        scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x1a1a1a);
+        
+        // Создаем камеру
+        const container = document.getElementById('canvas-container');
+        camera = new THREE.PerspectiveCamera(75, container.clientWidth / container.clientHeight, 0.1, 1000);
+        updateCameraPosition();
+        
+        // Создаем рендерер
+        renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        
+        // Очищаем контейнер и добавляем рендерер
+        container.innerHTML = '';
+        container.appendChild(renderer.domElement);
+        
+        // Освещение
+        const ambientLight = new THREE.AmbientLight(0x404040, 0.6);
+        scene.add(ambientLight);
+        
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        directionalLight.position.set(10, 10, 5);
+        scene.add(directionalLight);
+
+        // Обработчики событий
+        setupMouseControls();
+        
+        // Скрываем loading
+        document.getElementById('loading').style.display = 'none';
+        
+        // Запускаем анимацию
+        animate();
+        
+        console.log('Three.js initialized successfully');
+        
+        // Показываем демо данные
+        showDemoData();
+        
+      } catch (error) {
+        console.error('Three.js initialization error:', error);
+        document.getElementById('loading').style.display = 'none';
+        document.getElementById('error').style.display = 'block';
+      }
+    }
+
+    function showDemoData() {
+      const demoData = generateDemoData(Date.now());
+      updateVisualization(demoData);
+    }
+
+    function updateCameraPosition() {
+      camera.position.x = cameraDistance * Math.sin(cameraAngleY) * Math.cos(cameraAngleX);
+      camera.position.y = cameraDistance * Math.sin(cameraAngleX);
+      camera.position.z = cameraDistance * Math.cos(cameraAngleY) * Math.cos(cameraAngleX);
+      camera.lookAt(0, 0, 0);
+    }
+
+    function setupMouseControls() {
+      const canvas = renderer.domElement;
+      
+      canvas.addEventListener('mousedown', (event) => {
+        isDragging = true;
+        previousMousePosition = { x: event.clientX, y: event.clientY };
+      });
+      
+      canvas.addEventListener('mousemove', (event) => {
+        if (!isDragging) return;
+        
+        const deltaX = event.clientX - previousMousePosition.x;
+        const deltaY = event.clientY - previousMousePosition.y;
+        
+        cameraAngleY += deltaX * 0.01;
+        cameraAngleX += deltaY * 0.01;
+        
+        cameraAngleX = Math.max(-Math.PI/2 + 0.1, Math.min(Math.PI/2 - 0.1, cameraAngleX));
+        
+        updateCameraPosition();
+        previousMousePosition = { x: event.clientX, y: event.clientY };
+      });
+      
+      canvas.addEventListener('mouseup', () => {
+        isDragging = false;
+      });
+      
+      canvas.addEventListener('wheel', (event) => {
+        cameraDistance += event.deltaY * 0.01;
+        cameraDistance = Math.max(5, Math.min(50, cameraDistance));
+        updateCameraPosition();
+        event.preventDefault();
+      });
+    }
+
+    function animate() {
+      requestAnimationFrame(animate);
+      if (renderer && scene && camera) {
+        renderer.render(scene, camera);
+      }
+    }
+
+    function updateVisualization(data) {
+      try {
+        console.log('Updating visualization with data:', data);
+        
+        // Очищаем сцену
+        while(scene.children.length > 0) { 
+          scene.remove(scene.children[0]); 
+        }
+        
+        // Добавляем освещение обратно
+        const ambientLight = new THREE.AmbientLight(0x404040, 0.6);
+        scene.add(ambientLight);
+        
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        directionalLight.position.set(10, 10, 5);
+        scene.add(directionalLight);
+
+        // Обновляем траекторию
+        if (visibility.trajectory && data.poses && data.poses.length > 0) {
+          const trajectoryPoints = [];
+          for (let i = 0; i < data.poses.length; i++) {
+            const pose = data.poses[i];
+            trajectoryPoints.push(new THREE.Vector3(pose.x, pose.y, pose.z));
+          }
+          
+          const trajectoryGeometry = new THREE.BufferGeometry().setFromPoints(trajectoryPoints);
+          const trajectoryMaterial = new THREE.LineBasicMaterial({ 
+            color: 0x00ff00,
+            linewidth: 2 
+          });
+          
+          trajectory = new THREE.Line(trajectoryGeometry, trajectoryMaterial);
+          scene.add(trajectory);
+        }
+
+        // Обновляем облако точек
+        if (visibility.points && data.points && data.points.length > 0) {
+          const positions = new Float32Array(data.points.length * 3);
+          const colors = new Float32Array(data.points.length * 3);
+          
+          for (let i = 0; i < data.points.length; i++) {
+            const point = data.points[i];
+            positions[i * 3] = point.x;
+            positions[i * 3 + 1] = point.y;
+            positions[i * 3 + 2] = point.z;
+            colors[i * 3] = point.r / 255;
+            colors[i * 3 + 1] = point.g / 255;
+            colors[i * 3 + 2] = point.b / 255;
+          }
+          
+          const geometry = new THREE.BufferGeometry();
+          geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+          geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+          
+          const material = new THREE.PointsMaterial({
+            size: 0.05,
+            vertexColors: true,
+            sizeAttenuation: true
+          });
+          
+          pointCloud = new THREE.Points(geometry, material);
+          scene.add(pointCloud);
+        }
+        
+        // Обновляем статистику
+        const statsElement = document.getElementById('stats');
+        if (statsElement) {
+          statsElement.innerHTML = 
+            `Точек: ${data.points?.length || 0}<br>
+             Поз: ${data.poses?.length || 0}<br>
+             Кадры: ${data.processed_frames || 0}/${data.total_frames || 0}`;
+        }
+      } catch (error) {
+        console.error('Error updating visualization:', error);
+      }
+    }
+
+    function toggleVisibility(element) {
+      visibility[element] = !visibility[element];
+      
+      const button = document.getElementById('btn-' + element);
+      if (button) {
+        button.classList.toggle('active', visibility[element]);
+      }
+      
+      // Перерисовываем сцену
+      showDemoData();
+    }
+
+    function resetCamera() {
+      cameraDistance = 15;
+      cameraAngleX = Math.PI / 4;
+      cameraAngleY = Math.PI / 4;
+      updateCameraPosition();
+    }
+
+    function handleResize() {
+      const container = document.getElementById('canvas-container');
+      if (container && camera && renderer) {
+        camera.aspect = container.clientWidth / container.clientHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(container.clientWidth, container.clientHeight);
+      }
+    }
+
+    // Функция для получения данных из Flutter
+    window.onFlutterMessage = function(data) {
+      console.log('Received data from Flutter:', data);
+      updateVisualization(data);
+    };
+
+    function generateDemoData(t) {
+      const poses = [];
+      for(let i = 0; i < 20; i++) {
+        const s = t * 0.001 + i * 0.2;
+        poses.push({
+          x: Math.sin(s) * 2, 
+          y: Math.abs(Math.sin(s * 0.5)) * 0.8 + 0.2, 
+          z: Math.cos(s) * 2
+        });
+      }
+      const points = [];
+      for(let i = 0; i < 200; i++) {
+        points.push({
+          x: (Math.random() - 0.5) * 5, 
+          y: (Math.random() - 0.5) * 3, 
+          z: (Math.random() - 0.5) * 4, 
+          r: Math.floor(Math.random() * 255), 
+          g: Math.floor(Math.random() * 255), 
+          b: Math.floor(Math.random() * 255)
+        });
+      }
+      return {
+        poses: poses, 
+        points: points, 
+        processed_frames: 150, 
+        total_frames: 300
+      };
+    }
+
+    // Инициализация при загрузке
+    window.addEventListener('DOMContentLoaded', function() {
+      setTimeout(init, 100);
+    });
+
+    window.addEventListener('resize', handleResize);
+  </script>
+</body>
+</html>
